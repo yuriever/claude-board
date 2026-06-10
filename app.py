@@ -50,9 +50,16 @@ state = State()
 def _enriched_snapshot() -> dict:
     snap = sessions.snapshot()
     perm_by_tty = perms.pending_by_tty()
+    # Live Codex sessions arrive pre-enriched (codex transcripts have a different
+    # shape than Claude's, so they can't go through the loop below). Shell-process
+    # counts are platform-agnostic, so we fold their pids into the single ps walk.
+    codex_windows = codex.codex_window_dicts()
     shell_counts = sessions.shell_descendant_counts(
-        [w["pid"] for w in snap["windows"] if isinstance(w.get("pid"), int)]
+        [w["pid"] for w in snap["windows"] + codex_windows
+         if isinstance(w.get("pid"), int)]
     )
+    for cw in codex_windows:
+        cw["shell_proc_count"] = shell_counts.get(cw.get("pid"), 0)
     for w in snap["windows"]:
         w["shell_proc_count"] = shell_counts.get(w.get("pid"), 0)
         tty = w.get("tty")
@@ -114,6 +121,18 @@ def _enriched_snapshot() -> dict:
             if status == "idle" and isinstance(pid, int):
                 promptqueue.clear(pid)  # a queue can't outlive an idle session
             w["queued"] = []
+    # Merge live Codex windows in, then recompute the header counts over every
+    # visible (non-hidden) window across both platforms.
+    snap["windows"].extend(codex_windows)
+    visible = [w for w in snap["windows"] if not w.get("hidden")]
+    busy = [w for w in visible if w.get("status") == "busy"]
+    waiting = [w for w in visible if w.get("status") == "waiting"]
+    snap["counts"] = {
+        "total": len(visible),
+        "busy": len(busy),
+        "waiting": len(waiting),
+        "idle": len(visible) - len(busy) - len(waiting),
+    }
     # Sort by triage priority (most urgent first), then by idle time.
     snap["windows"].sort(key=lambda w: (
         patrol.TRIAGE_PRIORITY.get(w.get("triage", ""), 99),
@@ -205,11 +224,27 @@ def api_timeline(pid: int, limit: int = 2000) -> dict:
     if not w:
         raise HTTPException(404, "window not found")
     tp = w.transcript_path or ""
+    if w.platform == "codex":
+        # Codex transcripts have their own shape and no Claude-style interactive
+        # menu to scrape from the pane.
+        activity = codex.extract_codex_session_activity(tp) if tp else {}
+        return {
+            "pid": pid,
+            "session_id": w.session_id,
+            "project_name": w.project_name,
+            "platform": "codex",
+            "events": codex.codex_timeline(tp, limit=limit) if tp else [],
+            "skills_used": activity.get("skills_used", []),
+            "memory_ops": activity.get("memory_ops", []),
+            "plan_history": [],
+            "menu": None,
+        }
     events = transcripts.timeline(tp, limit=limit) if tp else []
     return {
         "pid": pid,
         "session_id": w.session_id,
         "project_name": w.project_name,
+        "platform": "claude",
         "events": events,
         "skills_used": transcripts.extract_skills_used(tp) if tp else [],
         "memory_ops": transcripts.extract_memory_ops(tp) if tp else [],
@@ -269,6 +304,7 @@ def api_focus(pid: int) -> dict:
 
 class CreateBody(BaseModel):
     cwd: str
+    platform: str = "claude"  # "claude" | "codex"
 
 
 class PromptBody(BaseModel):
@@ -279,7 +315,7 @@ class PromptBody(BaseModel):
 def api_window_create(body: CreateBody) -> dict:
     if not sessions._cwd_visible(body.cwd):
         raise HTTPException(403, "cwd is hidden by the dashboard filter")
-    return actions.create_session(body.cwd)
+    return actions.create_session(body.cwd, body.platform)
 
 
 @app.post("/api/windows/{pid}/prompt")

@@ -211,6 +211,7 @@ class Window:
     transcript_path: Optional[str]
     alive: bool
     hidden: bool          # internal `.slock` agent sub-session, shown at page bottom
+    platform: str = "claude"   # "claude" | "codex" — which CLI owns this window
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -295,6 +296,16 @@ def find_window(pid: int) -> Optional[Window]:
     for w in list_windows(include_dead=True):
         if w.pid == pid:
             return w
+    # Live Codex sessions aren't backed by ~/.claude/sessions files; they're
+    # discovered from running processes. Late import to avoid a circular
+    # dependency (codex imports HOME_BASE from this module).
+    try:
+        from . import codex
+        for w in codex.list_codex_windows():
+            if w.pid == pid:
+                return w
+    except Exception:
+        pass
     return None
 
 

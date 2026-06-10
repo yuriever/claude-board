@@ -26,7 +26,13 @@ class CreateRouteTests(unittest.TestCase):
     def test_dispatches_to_create_session(self):
         with mock.patch.object(appmod.actions, "create_session", return_value={"ok": True, "pane_id": "%1"}) as m:
             r = appmod.api_window_create(appmod.CreateBody(cwd="/tmp"))
-        m.assert_called_once_with("/tmp")
+        m.assert_called_once_with("/tmp", "claude")
+        self.assertTrue(r["ok"])
+
+    def test_dispatches_codex_platform(self):
+        with mock.patch.object(appmod.actions, "create_session", return_value={"ok": True, "pane_id": "%1"}) as m:
+            r = appmod.api_window_create(appmod.CreateBody(cwd="/tmp", platform="codex"))
+        m.assert_called_once_with("/tmp", "codex")
         self.assertTrue(r["ok"])
 
 
