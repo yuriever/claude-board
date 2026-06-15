@@ -172,11 +172,31 @@ def index() -> HTMLResponse:
     return HTMLResponse(html, headers={"Cache-Control": "no-cache, must-revalidate"})
 
 
+def _host_ip_octet() -> str:
+    """Return the last octet of this machine's primary outbound IP (e.g. "60"
+    for 10.145.87.60), so dashboards self-identify by host without manual
+    config. Empty string if the IP can't be determined."""
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # No packets are sent; this just picks the interface the kernel would
+        # use to reach an external address.
+        s.connect(("1.1.1.1", 80))
+        ip = s.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        s.close()
+    return ip.rsplit(".", 1)[-1] if ip else ""
+
+
 def _apply_instance_label(html: str) -> str:
-    """Stamp a per-host label (CLAUDE_FLEET_LABEL, e.g. "fw71") into the tab
-    title and header so multiple dashboards are tellable apart. No label set ⇒
-    HTML is returned unchanged."""
-    label = os.environ.get("CLAUDE_FLEET_LABEL", "").strip()
+    """Stamp a per-host label into the tab title and header so multiple
+    dashboards are tellable apart. Defaults to the host IP's last octet
+    (e.g. "60"); CLAUDE_FLEET_LABEL overrides it. No label resolved ⇒ HTML is
+    returned unchanged."""
+    label = os.environ.get("CLAUDE_FLEET_LABEL", "").strip() or _host_ip_octet()
     if not label:
         return html
     html = html.replace(
