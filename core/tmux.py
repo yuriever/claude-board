@@ -86,6 +86,7 @@ def _run(*args: str) -> dict:
             ["tmux", *args],
             capture_output=True, text=True, timeout=_TIMEOUT,
             env=_spawn_env(),
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return {"ok": False, "rc": None, "stdout": "", "stderr": "", "error": "tmux not found on PATH"}
@@ -218,6 +219,14 @@ def new_window(cwd: str, cmd: Optional[list[str]] = None) -> dict:
         r = _run("new-window", "-P", "-F", "#{pane_id}",
                  "-t", target["target"], "-c", cwd, *cmd)
     else:
+        # Cold start (no tmux server yet). Don't let `new-session` be what forks
+        # the server: on some tmux builds that daemon — and the long-lived pane
+        # process under it — inherits the stdout/stderr pipe `_run`'s
+        # subprocess.run is reading, so the read blocks waiting for an EOF that
+        # never comes (the dashboard's "Spawning…" hang on a host with no tmux
+        # server). Starting the server in its own call lets it daemonize and
+        # close those fds first; the subsequent new-session then only attaches.
+        _run("start-server")
         r = _run("new-session", "-d", "-s", target["target"],
                  "-P", "-F", "#{pane_id}", "-c", cwd, *cmd)
     if not r["ok"]:

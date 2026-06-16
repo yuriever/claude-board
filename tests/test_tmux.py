@@ -195,6 +195,12 @@ class NewWindowTests(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertEqual(r["pane_id"], "%1")
         self.assertFalse(any("new-window" in a for a in calls))
+        # The server must be started in its own call *before* new-session, so a
+        # cold-start new-session only attaches and never forks the daemon under
+        # our captured pipe (the "Spawning…" hang). Order matters.
+        start_idx = next(i for i, a in enumerate(calls) if "start-server" in a)
+        new_sess_idx = next(i for i, a in enumerate(calls) if "new-session" in a)
+        self.assertLess(start_idx, new_sess_idx)
         new_sess_argv = [a for a in calls if "new-session" in a][0]
         self.assertEqual(
             new_sess_argv,
