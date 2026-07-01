@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
 from typing import Optional
 
@@ -37,11 +38,44 @@ _CHILD_ENV_KEYS = (
 )
 
 
+def _venv_bin_dirs() -> set[str]:
+    """The board's own virtualenv `bin` dir(s), or empty if not in a venv.
+
+    `sys.prefix` diverges from `sys.base_prefix` exactly when the interpreter is
+    running inside a venv, so it identifies the venv even when the server was
+    started via `.venv/bin/uvicorn` without `activate` setting VIRTUAL_ENV.
+    """
+    dirs: set[str] = set()
+    if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
+        dirs.add(os.path.join(sys.prefix, "bin"))
+    venv = os.environ.get("VIRTUAL_ENV")
+    if venv:
+        dirs.add(os.path.join(venv, "bin"))
+    return {os.path.normpath(d) for d in dirs}
+
+
 def _spawn_env() -> dict:
-    """Process env with inherited Claude child-session markers removed."""
+    """Process env for spawned sessions, with two kinds of board context removed.
+
+    1. Claude child-session markers (see above) so sessions are top-level.
+    2. The board's own virtualenv. run.sh activates `.venv`, which prepends
+       `.venv/bin` to PATH and sets VIRTUAL_ENV. Spawned `claude` sessions work
+       in arbitrary project directories and must see a clean interpreter —
+       otherwise `which python` inside them resolves to the board's venv instead
+       of whatever the project expects.
+    """
     env = dict(os.environ)
     for k in _CHILD_ENV_KEYS:
         env.pop(k, None)
+    bin_dirs = _venv_bin_dirs()
+    if bin_dirs:
+        env.pop("VIRTUAL_ENV", None)
+        env.pop("PYTHONHOME", None)
+        path = env.get("PATH", "")
+        if path:
+            kept = [p for p in path.split(os.pathsep)
+                    if p and os.path.normpath(p) not in bin_dirs]
+            env["PATH"] = os.pathsep.join(kept)
     return env
 
 

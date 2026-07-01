@@ -332,5 +332,45 @@ class SendTextTests(unittest.TestCase):
         self.assertIn("enter failed", r["error"])
 
 
+class SpawnEnvTests(unittest.TestCase):
+    """_spawn_env must hand spawned sessions a clean interpreter, not the board's."""
+
+    def _env(self, overrides, *, prefix, base_prefix):
+        with mock.patch.dict(tmux.os.environ, overrides, clear=True), \
+             mock.patch.object(tmux.sys, "prefix", prefix), \
+             mock.patch.object(tmux.sys, "base_prefix", base_prefix):
+            return tmux._spawn_env()
+
+    def test_strips_board_virtualenv_from_path(self):
+        venv = "/board/.venv"
+        env = self._env(
+            {
+                "VIRTUAL_ENV": venv,
+                "PATH": f"{venv}/bin:/usr/bin:/bin",
+                "PYTHONHOME": f"{venv}",
+            },
+            prefix=venv, base_prefix="/usr",
+        )
+        self.assertNotIn("VIRTUAL_ENV", env)
+        self.assertNotIn("PYTHONHOME", env)
+        self.assertNotIn(f"{venv}/bin", env["PATH"].split(":"))
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+
+    def test_leaves_path_untouched_when_not_in_a_venv(self):
+        env = self._env(
+            {"PATH": "/usr/bin:/bin"},
+            prefix="/usr", base_prefix="/usr",
+        )
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+
+    def test_still_strips_claude_child_session_markers(self):
+        env = self._env(
+            {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "abc", "PATH": "/usr/bin"},
+            prefix="/usr", base_prefix="/usr",
+        )
+        self.assertNotIn("CLAUDECODE", env)
+        self.assertNotIn("CLAUDE_CODE_SESSION_ID", env)
+
+
 if __name__ == "__main__":
     unittest.main()
