@@ -61,6 +61,56 @@ class RunHelperTests(unittest.TestCase):
         self.assertEqual(argv[:3], ["tmux", "list-panes", "-a"])
 
 
+class SocketArgsTests(unittest.TestCase):
+    """FLEET_TMUX_SOCKET routes every call to an isolated tmux server."""
+
+    def setUp(self):
+        tmux._clear_caches()
+
+    def test_run_injects_socket_before_command(self):
+        with mock.patch.dict("os.environ", {"FLEET_TMUX_SOCKET": "juyi"}, clear=True):
+            with _patch_run(returncode=0) as m:
+                tmux._run("list-panes", "-a")
+        argv = m.call_args[0][0]
+        self.assertEqual(argv, ["tmux", "-L", "juyi", "list-panes", "-a"])
+
+    def test_run_omits_socket_when_unset(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with _patch_run(returncode=0) as m:
+                tmux._run("list-panes", "-a")
+        argv = m.call_args[0][0]
+        self.assertEqual(argv, ["tmux", "list-panes", "-a"])
+
+    def test_run_omits_socket_when_blank(self):
+        with mock.patch.dict("os.environ", {"FLEET_TMUX_SOCKET": "  "}, clear=True):
+            with _patch_run(returncode=0) as m:
+                tmux._run("list-panes")
+        argv = m.call_args[0][0]
+        self.assertEqual(argv, ["tmux", "list-panes"])
+
+    def test_new_window_targets_socketed_server(self):
+        # Socket is dedicated (-L juyi) but the session is NOT pinned: it falls
+        # out of sessions[0] on that server, so cards land wherever that server
+        # already hosts, not a hard-coded name.
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            if "list-sessions" in argv:
+                return FakeProc(returncode=0, stdout="beauty\n")
+            return FakeProc(returncode=0, stdout="%3\n")
+
+        with mock.patch.dict("os.environ", {"FLEET_TMUX_SOCKET": "juyi"}, clear=True):
+            with mock.patch.object(tmux.subprocess, "run", side_effect=fake_run):
+                r = tmux.new_window("/tmp")
+        self.assertTrue(r["ok"])
+        list_argv = [a for a in calls if "list-sessions" in a][0]
+        self.assertEqual(list_argv[:3], ["tmux", "-L", "juyi"])
+        new_win_argv = [a for a in calls if "new-window" in a][0]
+        self.assertEqual(new_win_argv[:4], ["tmux", "-L", "juyi", "new-window"])
+        self.assertIn("beauty", new_win_argv)  # sessions[0], not a pin
+
+
 class AvailableTests(unittest.TestCase):
     def setUp(self):
         tmux._clear_caches()

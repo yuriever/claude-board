@@ -79,11 +79,24 @@ def _spawn_env() -> dict:
     return env
 
 
+def _socket_args() -> list[str]:
+    """`-L <name>` server selector, or empty for the default tmux server.
+
+    `FLEET_TMUX_SOCKET=juyi` makes every call `tmux -L juyi …`, pinning the board
+    to an isolated server (its own socket + server process) instead of the shared
+    default one — so spawned cards never land next to unrelated sessions. `-L` is
+    a server option and must precede the tmux command. The session within that
+    server is still chosen by `_resolve_target`; the socket only picks the server.
+    """
+    name = (os.environ.get("FLEET_TMUX_SOCKET") or "").strip()
+    return ["-L", name] if name else []
+
+
 def _run(*args: str) -> dict:
     """Run `tmux <args>` and return {ok, rc, stdout, stderr, error}; never raise."""
     try:
         cp = subprocess.run(
-            ["tmux", *args],
+            ["tmux", *_socket_args(), *args],
             capture_output=True, text=True, timeout=_TIMEOUT,
             env=_spawn_env(),
         )
