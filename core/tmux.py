@@ -69,8 +69,8 @@ def _spawn_env() -> dict:
         env.pop(k, None)
     bin_dirs = _venv_bin_dirs()
     if bin_dirs:
-        env.pop("VIRTUAL_ENV", None)
-        env.pop("PYTHONHOME", None)
+        for v in _VENV_MARKER_VARS:
+            env.pop(v, None)
         path = env.get("PATH", "")
         if path:
             kept = [p for p in path.split(os.pathsep)
@@ -92,6 +92,27 @@ def _socket_args() -> list[str]:
     return ["-L", name] if name else []
 
 
+# Env vars that mark the board's own virtualenv. `_spawn_env()` drops them, but a
+# `pop` is not an `unset`: a long-lived tmux server started while `.venv` was
+# active still holds these in its own environment and re-injects them into every
+# new pane it forks — so a spawned session can inherit VIRTUAL_ENV from the stale
+# server even after `_spawn_env()` cleaned the board's PATH. Wrapping the pane
+# command in `env -u …` force-unsets them in the spawned process itself, which is
+# correct regardless of how old the tmux server's environment is.
+_VENV_MARKER_VARS = ("VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT", "PYTHONHOME")
+
+
+def _venv_unset_prefix() -> list[str]:
+    """`env -u …` argv prefix that strips the board's venv markers from a pane
+    command. Empty when the board isn't running inside a venv (nothing to strip)."""
+    if not _venv_bin_dirs():
+        return []
+    prefix = ["env"]
+    for v in _VENV_MARKER_VARS:
+        prefix += ["-u", v]
+    return prefix
+
+
 def _run(*args: str) -> dict:
     """Run `tmux <args>` and return {ok, rc, stdout, stderr, error}; never raise."""
     try:
@@ -99,6 +120,7 @@ def _run(*args: str) -> dict:
             ["tmux", *_socket_args(), *args],
             capture_output=True, text=True, timeout=_TIMEOUT,
             env=_spawn_env(),
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         return {"ok": False, "rc": None, "stdout": "", "stderr": "", "error": "tmux not found on PATH"}
@@ -226,11 +248,22 @@ def new_window(cwd: str, cmd: Optional[list[str]] = None) -> dict:
     work from a cold start instead of failing on an empty tmux server.
     """
     cmd = cmd or ["claude", "--dangerously-skip-permissions"]
+    # Force-unset the board's venv markers on the pane command itself so a stale
+    # tmux server can't re-inject VIRTUAL_ENV into the spawned session.
+    cmd = [*_venv_unset_prefix(), *cmd]
     target = _resolve_target()
     if target["exists"]:
         r = _run("new-window", "-P", "-F", "#{pane_id}",
                  "-t", target["target"], "-c", cwd, *cmd)
     else:
+        # Cold start (no tmux server yet). Don't let `new-session` be what forks
+        # the server: on some tmux builds that daemon — and the long-lived pane
+        # process under it — inherits the stdout/stderr pipe `_run`'s
+        # subprocess.run is reading, so the read blocks waiting for an EOF that
+        # never comes (the dashboard's "Spawning…" hang on a host with no tmux
+        # server). Starting the server in its own call lets it daemonize and
+        # close those fds first; the subsequent new-session then only attaches.
+        _run("start-server")
         r = _run("new-session", "-d", "-s", target["target"],
                  "-P", "-F", "#{pane_id}", "-c", cwd, *cmd)
     if not r["ok"]:
@@ -278,10 +311,52 @@ _SLASH_SETTLE = 0.5
 # composer unsubmitted. A short settle splits the burst from the Enter so it
 # registers as a real submit. Applies to EVERY Codex prompt (not just slash),
 # so callers pass it explicitly via send_text(settle_before_enter=...).
-_CODEX_ENTER_SETTLE = 0.4
+#
+# The catch-up time grows with paste size: a big multi-paragraph prompt is still
+# being ingested/re-wrapped when a flat 0.4s Enter arrives, so it gets dropped
+# and the prompt sits unsent. Scale the settle with length instead of trusting a
+# single magic number, and back it with a submit-verify (see send_text) so the
+# rare tail case still self-heals rather than silently stranding the prompt.
+_CODEX_ENTER_SETTLE = 0.4          # base/floor
+_CODEX_ENTER_SETTLE_PER_KCHAR = 0.5  # extra seconds per 1000 chars pasted
+_CODEX_ENTER_SETTLE_MAX = 3.0
 
 
-def send_text(pane: str, text: str, settle_before_enter: float = 0.0) -> dict:
+# After the submit Enter, re-check the composer this many times, waiting this
+# long each round, resending Enter while our text is still stranded there.
+_SUBMIT_VERIFY_RETRIES = 3
+_SUBMIT_VERIFY_WAIT = 0.4
+
+
+def codex_enter_settle(text_len: int) -> float:
+    """Length-scaled settle before Codex's submit Enter (see _CODEX_ENTER_SETTLE)."""
+    scaled = _CODEX_ENTER_SETTLE + (text_len / 1000.0) * _CODEX_ENTER_SETTLE_PER_KCHAR
+    return min(scaled, _CODEX_ENTER_SETTLE_MAX)
+
+
+def _composer_has_tail(pane: str, text: str) -> bool:
+    """True if a distinctive tail of `text` still sits in `pane`'s composer.
+
+    The composer is the region after the last `›` prompt marker; a submitted
+    prompt is echoed as a turn ABOVE that marker and leaves the composer empty
+    (a dim ghost suggestion, never our text). Whitespace is squeezed on both
+    sides so the needle survives the composer's soft-wrapping and indentation.
+    """
+    needle = "".join(text.split())[-24:]
+    if not needle:
+        return False
+    cap = capture_pane(pane).get("text", "")
+    idx = cap.rfind("›")
+    region = cap[idx:] if idx != -1 else cap
+    return needle in "".join(region.split())
+
+
+def send_text(
+    pane: str,
+    text: str,
+    settle_before_enter: float = 0.0,
+    verify_submit: bool = False,
+) -> dict:
     """Send `text` literally into `pane`, then a separate Enter to submit it.
 
     `settle_before_enter` pauses between the pasted text and the Enter. Some TUIs
@@ -290,6 +365,10 @@ def send_text(pane: str, text: str, settle_before_enter: float = 0.0) -> dict:
     submitting; the settle lets the composer catch up. The slash case is detected
     here; platform-wide needs (e.g. Codex) are passed in by the caller. When both
     apply, the longer wait wins.
+
+    `verify_submit` (Codex) confirms the composer actually emptied after Enter and
+    resends Enter a couple of times if the prompt is still sitting there, so an
+    under-tuned settle can't silently strand a prompt.
     """
     literal = _run("send-keys", "-t", pane, "-l", "--", text)
     if not literal["ok"]:
@@ -302,4 +381,15 @@ def send_text(pane: str, text: str, settle_before_enter: float = 0.0) -> dict:
     enter = _run("send-keys", "-t", pane, "Enter")
     if not enter["ok"]:
         return {"ok": False, "error": enter["error"]}
+    if verify_submit:
+        for _ in range(_SUBMIT_VERIFY_RETRIES):
+            time.sleep(_SUBMIT_VERIFY_WAIT)
+            if not _composer_has_tail(pane, text):
+                break
+            resent = _run("send-keys", "-t", pane, "Enter")
+            if not resent["ok"]:
+                return {"ok": False, "error": resent["error"]}
+        else:
+            if _composer_has_tail(pane, text):
+                return {"ok": False, "error": "prompt still unsent after retries"}
     return {"ok": True}

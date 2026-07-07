@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from core import actions, codex, history, memory, patrol, perms, plans, promptqueue, search, sessions, skills, transcripts, tmux
+from core import actions, btwcapture, btwlog, codex, history, memory, patrol, perms, plans, promptqueue, search, sessions, skills, transcripts, tmux
 
 HERE = Path(__file__).parent
 STATIC_DIR = HERE / "static"
@@ -29,16 +29,22 @@ class State:
         self.subscribers: set[asyncio.Queue] = set()
 
     def diff_signature(self, snap: dict) -> tuple:
-        # Tuple of (pid, status, waiting_for, updated_at, queued) lets us tell
-        # whether anything dashboard-visible has changed. The queued list is
-        # included so consuming/adding a queued prompt re-broadcasts even when
-        # status and updated_at are otherwise unchanged (the session stays
-        # "busy" while Claude works through the queue).
+        # Tuple of (pid, status, waiting_for, updated_at, queued, btw) lets us
+        # tell whether anything dashboard-visible has changed. The queued list
+        # is included so consuming/adding a queued prompt re-broadcasts even
+        # when status and updated_at are otherwise unchanged (the session stays
+        # "busy" while Claude works through the queue). The /btw aside identity
+        # is included so archiving or dismissing one re-broadcasts on an
+        # otherwise idle session (a fuller stitched answer gets a new id, and a
+        # pending aside has no id yet — hence id+question+pending).
         return tuple(
             (
                 w["pid"], w["status"], w["waiting_for"], w["updated_at"],
                 tuple((q.get("source"), q.get("text"))
                       for q in w.get("queued", [])),
+                ((w.get("btw") or {}).get("id"),
+                 (w.get("btw") or {}).get("question"),
+                 (w.get("btw") or {}).get("pending")),
             )
             for w in snap["windows"]
         )
@@ -131,6 +137,23 @@ def _enriched_snapshot() -> dict:
             if status == "idle" and isinstance(pid, int):
                 promptqueue.clear(pid)  # a queue can't outlive an idle session
             w["queued"] = []
+        # /btw asides never reach the transcript, so scrape the ephemeral overlay
+        # from the pane (best-effort, only while it is on-screen) and latch it to
+        # disk. The overlay can be open whether the session is busy or idle, so
+        # this isn't gated on show_queue. w["btw"] shows the latest archived aside
+        # and persists after the overlay is dismissed.
+        sid = w.get("session_id")
+        pending_q = None
+        if isinstance(pid, int) and w.get("tty") and sid:
+            # A long answer only shows a slice in the overlay window; recovering the
+            # rest means scrolling the pane, so this gates on a cheap top-slice
+            # scrape and does the slow scroll-stitch off-thread (core.btwcapture).
+            pending_q = btwcapture.maybe_capture(pid, sid)
+        w["btw"] = btwlog.latest(sid) if sid else None
+        if pending_q is not None:
+            # An aside whose answer is still generating: show it live so /btw
+            # never looks dead while it works (nothing is archived yet).
+            w["btw"] = {"question": pending_q, "answer": "", "pending": True}
     # Merge live Codex windows in, then recompute the header counts over every
     # visible (non-hidden) window across both platforms. Count by `triage`, not
     # the raw `status`: the header chips filter cards on triage, so a session
@@ -274,6 +297,14 @@ def api_timeline(pid: int, limit: int = 2000) -> dict:
             "menu": None,
         }
     events = transcripts.timeline(tp, limit=limit) if tp else []
+    # Merge in /btw asides — they live only in the fleet's archive (never the
+    # transcript). Re-sort by timestamp so they interleave with real turns;
+    # only sort when there is something to merge, to avoid perturbing the
+    # transcript's own ordering otherwise.
+    btw_evs = btwlog.timeline_events(w.session_id) if w.session_id else []
+    if btw_evs:
+        events = sorted(events + btw_evs,
+                        key=lambda e: transcripts._parse_ts(e.get("ts", "")))[-limit:]
     return {
         "pid": pid,
         "session_id": w.session_id,
@@ -415,6 +446,24 @@ def api_close(pid: int) -> dict:
     return actions.close_session(pid)
 
 
+class BtwDismissBody(BaseModel):
+    id: int  # btwlog entry id (w["btw"].id on the card)
+
+
+@app.post("/api/windows/{pid}/btw/dismiss")
+def api_btw_dismiss(pid: int, body: BtwDismissBody) -> dict:
+    """Hide the card's archived /btw aside. Card-state only: the aside stays in
+    the archive and the timeline (that's history), it just stops occupying the
+    card."""
+    w = _require_window(pid)
+    sid = getattr(w, "session_id", None)
+    if not sid:
+        return {"ok": False, "error": "window has no session id"}
+    if not btwlog.dismiss(sid, body.id):
+        return {"ok": False, "error": "aside not found"}
+    return {"ok": True}
+
+
 @app.get("/api/locate/{session_id}")
 def api_locate(session_id: str) -> dict:
     """Reverse lookup: session id (or unique >=8-char prefix) → tmux pane.
@@ -495,6 +544,11 @@ def api_history_resume(session_id: str) -> dict:
     cwd = sess.get("project") or str(Path.home())
     r = actions.open_claude_window(cwd, ["--resume", session_id])
     r.update({"action": "resumed", "session_id": session_id, "cwd": cwd})
+    # A large/old session parks on Claude's "resume from summary?" picker. The
+    # fleet drives resumed sessions unattended, so auto-answer it (default:
+    # "Resume full session as-is") rather than leaving the card stuck on a menu.
+    if r.get("ok") and r.get("backend") == "tmux" and r.get("pane_id"):
+        r["picker"] = actions.confirm_resume_picker(r["pane_id"])
     return r
 
 
