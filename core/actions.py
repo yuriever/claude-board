@@ -824,12 +824,19 @@ def parse_btw_overlay(text: str) -> Optional[dict]:
 def _overlay_anchors(text: str) -> Optional[tuple[list[str], int, int, int]]:
     """(lines, top, q_idx, foot) anchors of any open /btw overlay, or None.
 
-    The overlay pins its ▔ border, the "/btw …" question line, and the footer in
-    place while only the answer region scrolls, so this same anchor logic works at
-    any scroll position — capture_full_btw_answer relies on that to walk a long
+    The overlay pins the "/btw …" question line and the footer in place while
+    only the answer region scrolls, so this same anchor logic works at any
+    scroll position — capture_full_btw_answer relies on that to walk a long
     answer window-by-window. Settled-or-not is the caller's judgment (the footer
     at `foot` carries the signal): _btw_regions wants finished answers only,
-    parse_btw_pending wants the mid-generation state."""
+    parse_btw_pending wants the mid-generation state.
+
+    Top anchor: older Claude builds draw a ▔ border above the overlay; current
+    builds (v2.1.20x) draw none, so fall back to the composer marker line (the
+    overlay always renders below the composer) and finally to the capture
+    start. The composer line is only ever the (exclusive) top bound — while the
+    aside is open it still shows the just-submitted "/btw …" command itself,
+    and must never be mistaken for the overlay's question line."""
     if not text:
         return None
     lines = text.split("\n")
@@ -840,7 +847,9 @@ def _overlay_anchors(text: str) -> Optional[tuple[list[str], int, int, int]]:
     top = next((i for i in range(foot - 1, -1, -1)
                 if _BTW_TOP_RE.match(lines[i])), None)
     if top is None:
-        return None
+        marker = next((i for i in range(foot - 1, -1, -1)
+                       if lines[i].lstrip().startswith(("❯", "›"))), None)
+        top = marker if marker is not None else -1
     q_idx = next((i for i in range(foot - 1, top, -1)
                   if lines[i].lstrip().startswith("/btw")), None)
     if q_idx is None:
