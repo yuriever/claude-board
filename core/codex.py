@@ -4,7 +4,7 @@ Also discovers *live* Codex TUI sessions from running processes so they can be
 rendered as dashboard cards alongside Claude Code windows. Codex doesn't write a
 pid-keyed session file the way Claude does, but a running interactive session
 holds its `rollout-*.jsonl` transcript open as a file descriptor — so we map
-process -> session via /proc/<pid>/fd (Linux only; degrades to nothing else).
+process -> session via the platform open-files adapter.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from . import platform as platform_process
 from .sessions import (
     HOME_BASE,
     Window,
@@ -493,36 +494,41 @@ def _proc_table() -> dict[int, dict]:
     return table
 
 
-def _newest_rollout_in_fd_dir(fd_dir: str, sessions_marker: str) -> Optional[str]:
-    """The most recently written rollout JSONL among the fds open in `fd_dir`.
+def _newest_rollout_from_paths(paths, sessions_marker: str) -> Optional[str]:
+    """The most recently written rollout JSONL among open file paths.
 
     A codex TUI that runs a turn to completion and then continues opens a *new*
     rollout while keeping the finished one's fd open — so a single process can
     hold several rollout fds at once. Returning whichever listdir yields first
     latches the card onto a stale, frozen transcript; pick the newest-by-mtime
-    fd instead (the live rollout is the one still being written). mtime is read
-    through the fd, which follows the symlink to the target file.
+    path instead (the live rollout is the one still being written).
     """
     best: Optional[str] = None
     best_mtime = -1.0
-    try:
-        names = os.listdir(fd_dir)
-    except Exception:
-        return None
-    for n in names:
-        fd_path = os.path.join(fd_dir, n)
-        try:
-            target = os.readlink(fd_path)
-        except Exception:
-            continue
+    for target in paths:
         if "rollout-" in target and target.endswith(".jsonl") and sessions_marker in target:
             try:
-                mtime = os.stat(fd_path).st_mtime
+                mtime = Path(target).stat().st_mtime
             except Exception:
                 mtime = 0.0
             if mtime > best_mtime:
                 best, best_mtime = target, mtime
     return best
+
+
+def _newest_rollout_in_fd_dir(fd_dir: str, sessions_marker: str) -> Optional[str]:
+    """Compatibility wrapper for tests that model Linux /proc fd directories."""
+    try:
+        names = os.listdir(fd_dir)
+    except Exception:
+        return None
+    paths: list[str] = []
+    for n in names:
+        try:
+            paths.append(os.readlink(os.path.join(fd_dir, n)))
+        except Exception:
+            continue
+    return _newest_rollout_from_paths(paths, sessions_marker)
 
 
 def _rollout_fd(pid: int) -> Optional[str]:
@@ -532,9 +538,12 @@ def _rollout_fd(pid: int) -> Optional[str]:
     background `mcp-server`/`app-server` codex processes do not, so this check
     naturally selects only real user-facing sessions. When a process holds more
     than one rollout fd (a finished turn plus its live continuation), the newest
-    one wins — see _newest_rollout_in_fd_dir.
+    one wins — see _newest_rollout_from_paths.
     """
-    return _newest_rollout_in_fd_dir(f"/proc/{pid}/fd", str(CODEX_SESSIONS_DIR))
+    return _newest_rollout_from_paths(
+        platform_process.open_files(pid),
+        str(CODEX_SESSIONS_DIR),
+    )
 
 
 def _top_codex_ancestor(fd_pid: int, table: dict[int, dict]) -> int:

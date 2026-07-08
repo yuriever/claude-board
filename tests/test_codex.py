@@ -8,11 +8,14 @@ carrying `input_text`. The latter shape is also reused for synthetic injections
 """
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from core import codex
+from core.platform import macos
 
 
 # A minimal rollout mirroring the on-disk event ordering of a real session:
@@ -203,6 +206,73 @@ class TestRolloutFdSelection(unittest.TestCase):
 
     def test_missing_fd_dir_returns_none(self):
         self.assertIsNone(codex._newest_rollout_in_fd_dir("/proc/0/fd", "codex-sessions"))
+
+
+class TestRolloutPathSelection(unittest.TestCase):
+    def _fake_rollout_paths(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        sessions = tmp / "codex-sessions"
+        sessions.mkdir()
+        old = sessions / "rollout-old.jsonl"
+        new = sessions / "rollout-new.jsonl"
+        other = sessions / "not-a-rollout.jsonl"
+        outside = tmp / "rollout-outside.jsonl"
+        for path in (old, new, other, outside):
+            path.write_text("{}\n")
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+        os.utime(other, (3000, 3000))
+        os.utime(outside, (4000, 4000))
+        return [str(old), str(other), str(outside), str(new)], str(new), str(sessions)
+
+    def test_picks_newest_rollout_from_open_paths(self):
+        paths, newest, marker = self._fake_rollout_paths()
+        self.assertEqual(codex._newest_rollout_from_paths(paths, marker), newest)
+
+    def test_non_rollout_open_paths_are_ignored(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        sessions = tmp / "codex-sessions"
+        sessions.mkdir()
+        log = sessions / "open.log"
+        log.write_text("x")
+        self.assertIsNone(codex._newest_rollout_from_paths([str(log)], str(sessions)))
+
+
+class TestMacOSOpenFiles(unittest.TestCase):
+    def test_lsof_parser_returns_only_absolute_name_records(self):
+        output = "\n".join([
+            "p123",
+            "fcwd",
+            "tDIR",
+            "n/Users/example-user/.codex/sessions/rollout-a.jsonl",
+            "nlocalhost:1234",
+            "n",
+            "",
+            "lsof: WARNING: can't stat() file system",
+            "n/private/tmp/plain.txt",
+            " n/private/tmp/malformed.txt",
+        ])
+        self.assertEqual(macos._parse_lsof_open_files(output), [
+            "/Users/example-user/.codex/sessions/rollout-a.jsonl",
+            "/private/tmp/plain.txt",
+        ])
+
+    def test_open_files_returns_empty_when_lsof_is_missing(self):
+        with mock.patch("core.platform.macos.subprocess.run", side_effect=FileNotFoundError):
+            self.assertEqual(macos.open_files(123), [])
+
+    def test_open_files_returns_empty_on_permission_denied_nonzero_exit(self):
+        proc = subprocess.CompletedProcess(
+            ["lsof"], 1, stdout="n/secret/path\n", stderr="permission denied")
+        with mock.patch("core.platform.macos.subprocess.run", return_value=proc):
+            self.assertEqual(macos.open_files(123), [])
+
+    def test_open_files_returns_empty_on_empty_output(self):
+        proc = subprocess.CompletedProcess(["lsof"], 0, stdout="", stderr="")
+        with mock.patch("core.platform.macos.subprocess.run", return_value=proc):
+            self.assertEqual(macos.open_files(123), [])
 
 
 if __name__ == "__main__":
