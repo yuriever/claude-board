@@ -1044,21 +1044,20 @@ def send_menu_keys(pid: int, keys: list[str]) -> dict:
 # A /btw answer stays up as a modal overlay ("Esc to close") until dismissed —
 # it does NOT auto-close after answering, and neither the read-only scrape nor
 # the scroll-stitch capture (capture_full_btw_answer) closes it. Text pasted into
-# a pane while that overlay is open is swallowed by the overlay, not the composer,
-# so the *next* prompt after a /btw is silently lost ("回不到普通 prompt 模式").
-# Detect the overlay by its distinctive ▔ top border together with the "Esc to
-# close" footer — distinct enough from normal transcript output that we won't
-# Escape (and so interrupt) a merely-working session.
-_OVERLAY_CLOSE_HINT = "Esc to close"
+# a pane while that overlay is open is swallowed by the overlay's key handling,
+# not the composer, so the *next* prompt after a /btw is silently lost — and the
+# stray keys destroy the aside itself ("回不到普通 prompt 模式"). Detection uses
+# the same anchors as the parser (_overlay_anchors: "Esc to close" footer plus a
+# "/btw" question line above it — border or borderless), distinct enough from
+# normal transcript output that we won't Escape (and so interrupt) a
+# merely-working session.
 _OVERLAY_DISMISS_TRIES = 4      # Escape + re-check, a few times
 _OVERLAY_DISMISS_SETTLE = 0.15  # let the overlay tear down before re-capturing
 
 
 def _answer_overlay_open(text: str) -> bool:
     """True if a dismissible answer overlay (a /btw aside) is covering the pane."""
-    if not text or _OVERLAY_CLOSE_HINT not in text:
-        return False
-    return any(_BTW_TOP_RE.match(ln) for ln in text.split("\n"))
+    return _overlay_anchors(text) is not None
 
 
 def _dismiss_answer_overlay(pane: str) -> None:

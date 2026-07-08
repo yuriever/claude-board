@@ -177,6 +177,61 @@ class SendPromptTests(unittest.TestCase):
         "    ↑/↓ to scroll · Esc to close\n"
     )
 
+    # Current Claude builds (v2.1.20x) draw the same overlay with NO ▔ top
+    # border: composer echo of the command, the question stack, the answer,
+    # the footer. Lifted from a live pane.
+    _BTW_OVERLAY_BORDERLESS = (
+        "❯ /btw what is 2 plus 2\n\n"
+        "  /btw what is 2 plus 2\n\n"
+        "    2 plus 2 is 4.\n\n"
+        "  ↑/↓ to scroll · c to copy · f to fork · Esc to close\n"
+    )
+    _BTW_ANSWERING_BORDERLESS = (
+        "❯ /btw what is 2 plus 2\n\n"
+        "  /btw what is 2 plus 2\n\n"
+        "    · Answering…\n\n"
+        "  Esc to close\n"
+    )
+
+    def test_borderless_overlay_is_dismissed_before_send(self):
+        # Current builds draw no ▔ border. Missing the overlay here means the
+        # pasted prompt is eaten by the overlay's key handling, which destroys
+        # the aside AND silently loses the prompt (seen live: both /btw answers
+        # and the follow-up prompt vanished).
+        caps = [{"ok": True, "text": self._BTW_OVERLAY_BORDERLESS},
+                {"ok": True, "text": self._CLEAN_PANE}]
+        with mock.patch.object(actions, "find_window", return_value=_fake_window("/dev/pts/3")), \
+             mock.patch.object(actions.tmux, "pane_for_tty", return_value="%5"), \
+             mock.patch.object(actions.tmux, "capture_pane",
+                               side_effect=lambda *a, **k: caps.pop(0) if caps else {"ok": True, "text": self._CLEAN_PANE}), \
+             mock.patch.object(actions.tmux, "send_keys", return_value={"ok": True}) as sk, \
+             mock.patch.object(actions.tmux, "send_text", return_value={"ok": True}) as st, \
+             mock.patch.object(actions.time, "sleep"):
+            r = actions.send_prompt(1234, "hello")
+        sk.assert_any_call("%5", "Escape")
+        st.assert_called_once()
+        self.assertTrue(r["ok"])
+
+    def test_borderless_answering_aside_is_waited_out_and_archived(self):
+        from core import btwcapture
+        caps = [{"ok": True, "text": self._BTW_ANSWERING_BORDERLESS},  # archive: generating
+                {"ok": True, "text": self._BTW_OVERLAY_BORDERLESS},    # archive: settled -> latch
+                {"ok": True, "text": self._BTW_OVERLAY_BORDERLESS},    # dismiss: present -> Esc
+                {"ok": True, "text": self._CLEAN_PANE}]                # dismiss: cleared
+        with mock.patch.object(actions, "find_window",
+                               return_value=_fake_window("/dev/pts/3", session_id="sessX")), \
+             mock.patch.object(actions.tmux, "pane_for_tty", return_value="%5"), \
+             mock.patch.object(actions.tmux, "capture_pane",
+                               side_effect=lambda *a, **k: caps.pop(0) if caps else {"ok": True, "text": self._CLEAN_PANE}), \
+             mock.patch.object(actions.tmux, "send_keys", return_value={"ok": True}) as sk, \
+             mock.patch.object(actions.tmux, "send_text", return_value={"ok": True}), \
+             mock.patch.object(actions.time, "sleep"), \
+             mock.patch.object(btwcapture, "capture_sync") as cs:
+            r = actions.send_prompt(1234, "hello")
+        cs.assert_called_once_with(1234, "sessX")
+        sk.assert_any_call("%5", "Escape")
+        self.assertTrue(r["ok"])
+
     def test_answering_aside_is_waited_out_and_archived_before_dismiss(self):
         # The aside's answer exists only in the overlay. send_prompt must wait
         # (bounded) for it to settle and archive it BEFORE the dismiss-Escape
