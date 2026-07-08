@@ -47,7 +47,7 @@ def _parse_prefixes(env_value: str) -> list[str]:
 
 # Machine-local visibility filter (default: show everything, so any host that
 # leaves these env vars unset is unaffected). Set them per-host — e.g. in a
-# gitignored .env.local sourced by run.sh — not in committed code.
+# gitignored .env.local loaded by run.sh — not in committed code.
 #   CLAUDE_FLEET_CWD_INCLUDE — if set, only sessions whose cwd is under one of
 #                             these path prefixes are shown.
 #   CLAUDE_FLEET_CWD_EXCLUDE — sessions under any of these prefixes are hidden.
