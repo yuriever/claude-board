@@ -334,14 +334,29 @@ def codex_enter_settle(text_len: int) -> float:
     return min(scaled, _CODEX_ENTER_SETTLE_MAX)
 
 
+# Footer line of an open /btw aside overlay (same anchor actions._overlay_anchors
+# keys on). While the aside is open, the composer line STILL shows the "/btw …"
+# command and the overlay echoes it again below — and a resent Enter would
+# dismiss the overlay, killing the aside mid-answer. So an on-screen footer
+# means "submitted", never "stranded". Any pre-existing overlay was closed by
+# actions.send_prompt before the send, so by verify time the footer can only
+# belong to the aside this very submit opened.
+_BTW_OVERLAY_FOOTER = "Esc to close"
+
+
 def _composer_has_tail(pane: str, text: str) -> bool:
-    """True if a distinctive tail of `text` still sits in `pane`'s composer.
+    """True if a distinctive tail of `text` still sits in `pane`'s composer,
+    stranded and awaiting a submit Enter.
 
     The composer is the region after the last prompt marker — `›` for Codex,
     `❯` for Claude; a submitted prompt is echoed as a turn ABOVE that marker
     (with the same marker glyph, hence "last") and leaves the composer empty
     (a dim ghost suggestion, never our text). Whitespace is squeezed on both
     sides so the needle survives the composer's soft-wrapping and indentation.
+
+    Exception: a /btw aside keeps its command text on the composer line for as
+    long as its answer overlay is open, so the overlay footer in the region
+    means the prompt DID submit (see _BTW_OVERLAY_FOOTER).
     """
     needle = "".join(text.split())[-24:]
     if not needle:
@@ -349,6 +364,8 @@ def _composer_has_tail(pane: str, text: str) -> bool:
     cap = capture_pane(pane).get("text", "")
     idx = max(cap.rfind("›"), cap.rfind("❯"))
     region = cap[idx:] if idx != -1 else cap
+    if _BTW_OVERLAY_FOOTER in region:
+        return False
     return needle in "".join(region.split())
 
 

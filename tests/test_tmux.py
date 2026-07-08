@@ -475,6 +475,33 @@ class SendTextVerifySubmitTests(unittest.TestCase):
         enters = [c for c in calls if c[-1] == "Enter"]
         self.assertEqual(len(enters), 2)  # initial submit + one resend
 
+    def test_open_btw_overlay_does_not_trigger_enter_resend(self):
+        # A submitted /btw keeps its command text on the composer line while the
+        # answer overlay is open, and an Enter would DISMISS that overlay — the
+        # aside dies mid-answer with nothing archived. The verify pass must read
+        # the overlay as "submitted", never as a stranded prompt to re-Enter.
+        overlay_screen = (
+            "❯ /btw hello, just reply ok\n"
+            "▔▔▔▔▔▔▔▔▔▔▔▔\n"
+            "  /btw hello, just reply ok\n"
+            "    ✽ Answering…\n"
+            "  Esc to close\n"
+        )
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            if "capture-pane" in argv:
+                return FakeProc(returncode=0, stdout=overlay_screen)
+            return FakeProc(returncode=0)
+
+        with mock.patch.object(tmux.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(tmux.time, "sleep"):
+            r = tmux.send_text("%5", "/btw hello, just reply ok")
+        self.assertTrue(r["ok"])
+        enters = [c for c in calls if c[-1] == "Enter"]
+        self.assertEqual(len(enters), 1)  # submit Enter only — overlay untouched
+
     def test_plain_text_still_skips_verification_by_default(self):
         calls = []
         with mock.patch.object(tmux.subprocess, "run", side_effect=self._recorder(calls)), \
@@ -519,6 +546,20 @@ class ComposerHasTailTests(unittest.TestCase):
             "  ⏵⏵ bypass permissions on\n"
         )
         self.assertFalse(self._tail(cap, "/clear"))
+
+    def test_btw_overlay_with_command_still_on_composer_is_not_stranded(self):
+        # While a /btw aside is open the composer line still shows the command
+        # AND the overlay echoes it below — but the "Esc to close" footer proves
+        # the submit landed, so the text must not be treated as stranded.
+        cap = (
+            "────────────\n"
+            "❯ /btw hello, just reply ok\n"
+            "▔▔▔▔▔▔▔▔▔▔▔▔\n"
+            "  /btw hello, just reply ok\n"
+            "    Ok.\n"
+            "  ↑/↓ to scroll · c to copy · f to fork · Esc to close\n"
+        )
+        self.assertFalse(self._tail(cap, "/btw hello, just reply ok"))
 
 
 class CodexEnterSettleTests(unittest.TestCase):
