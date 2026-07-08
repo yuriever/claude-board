@@ -362,7 +362,7 @@ class SendTextTests(unittest.TestCase):
                 mock.patch.object(tmux.time, "sleep", side_effect=sleeps.append):
             r = tmux.send_text("%5", "/research-pipeline")
         self.assertTrue(r["ok"])
-        self.assertEqual(sleeps, [tmux._SLASH_SETTLE])
+        self.assertEqual(sleeps[0], tmux._SLASH_SETTLE)
         self.assertEqual(calls[1], ["tmux", "send-keys", "-t", "%5", "Enter"])
 
     def test_settle_before_enter_pauses_plain_text(self):
@@ -391,7 +391,7 @@ class SendTextTests(unittest.TestCase):
                 mock.patch.object(tmux.time, "sleep", side_effect=sleeps.append):
             r = tmux.send_text("%5", "/foo", settle_before_enter=0.1)
         self.assertTrue(r["ok"])
-        self.assertEqual(sleeps, [tmux._SLASH_SETTLE])
+        self.assertEqual(sleeps[0], tmux._SLASH_SETTLE)
 
     def test_plain_text_does_not_sleep(self):
         def fake_run(argv, **kw):
@@ -458,6 +458,67 @@ class SendTextVerifySubmitTests(unittest.TestCase):
             r = tmux.send_text("%5", "hello", verify_submit=True)
         self.assertFalse(r["ok"])
         self.assertIn("unsent", r["error"])
+
+    def test_slash_prompt_auto_verifies_submit(self):
+        # Claude's slash popup can eat the submit Enter (it selects the
+        # highlighted completion instead), silently stranding e.g. "/clear" in
+        # the composer. Slash prompts must verify-and-resend without the caller
+        # opting in via verify_submit.
+        calls = []
+        states = iter([True, False])  # stranded once, then submitted
+        with mock.patch.object(tmux.subprocess, "run", side_effect=self._recorder(calls)), \
+                mock.patch.object(tmux.time, "sleep"), \
+                mock.patch.object(tmux, "_composer_has_tail",
+                                  side_effect=lambda *a: next(states)):
+            r = tmux.send_text("%5", "/clear")
+        self.assertTrue(r["ok"])
+        enters = [c for c in calls if c[-1] == "Enter"]
+        self.assertEqual(len(enters), 2)  # initial submit + one resend
+
+    def test_plain_text_still_skips_verification_by_default(self):
+        calls = []
+        with mock.patch.object(tmux.subprocess, "run", side_effect=self._recorder(calls)), \
+                mock.patch.object(tmux.time, "sleep"), \
+                mock.patch.object(tmux, "_composer_has_tail") as tail:
+            r = tmux.send_text("%5", "hello")
+        self.assertTrue(r["ok"])
+        tail.assert_not_called()
+        enters = [c for c in calls if c[-1] == "Enter"]
+        self.assertEqual(len(enters), 1)
+
+
+class ComposerHasTailTests(unittest.TestCase):
+    """_composer_has_tail must find the composer under BOTH markers: Codex's `›`
+    and Claude's `❯`."""
+
+    def _tail(self, cap_text, text):
+        with mock.patch.object(tmux, "capture_pane",
+                               return_value={"ok": True, "text": cap_text}):
+            return tmux._composer_has_tail("%5", text)
+
+    def test_claude_stranded_slash_command_is_detected(self):
+        cap = (
+            "✻ Cogitated for 3m 17s\n"
+            "\n"
+            "────────────\n"
+            "❯ /clear\n"
+            "────────────\n"
+            "  ⏵⏵ bypass permissions on\n"
+        )
+        self.assertTrue(self._tail(cap, "/clear"))
+
+    def test_claude_echoed_turn_above_empty_composer_is_not_stranded(self):
+        # A submitted prompt is echoed as a turn ABOVE the composer, with the
+        # same ❯ marker; only the LAST marker is the composer, and it is empty.
+        cap = (
+            "❯ /clear\n"
+            "  ⎿ cleared\n"
+            "────────────\n"
+            "❯ \n"
+            "────────────\n"
+            "  ⏵⏵ bypass permissions on\n"
+        )
+        self.assertFalse(self._tail(cap, "/clear"))
 
 
 class CodexEnterSettleTests(unittest.TestCase):

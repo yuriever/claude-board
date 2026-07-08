@@ -337,8 +337,9 @@ def codex_enter_settle(text_len: int) -> float:
 def _composer_has_tail(pane: str, text: str) -> bool:
     """True if a distinctive tail of `text` still sits in `pane`'s composer.
 
-    The composer is the region after the last `›` prompt marker; a submitted
-    prompt is echoed as a turn ABOVE that marker and leaves the composer empty
+    The composer is the region after the last prompt marker — `›` for Codex,
+    `❯` for Claude; a submitted prompt is echoed as a turn ABOVE that marker
+    (with the same marker glyph, hence "last") and leaves the composer empty
     (a dim ghost suggestion, never our text). Whitespace is squeezed on both
     sides so the needle survives the composer's soft-wrapping and indentation.
     """
@@ -346,7 +347,7 @@ def _composer_has_tail(pane: str, text: str) -> bool:
     if not needle:
         return False
     cap = capture_pane(pane).get("text", "")
-    idx = cap.rfind("›")
+    idx = max(cap.rfind("›"), cap.rfind("❯"))
     region = cap[idx:] if idx != -1 else cap
     return needle in "".join(region.split())
 
@@ -368,20 +369,24 @@ def send_text(
 
     `verify_submit` (Codex) confirms the composer actually emptied after Enter and
     resends Enter a couple of times if the prompt is still sitting there, so an
-    under-tuned settle can't silently strand a prompt.
+    under-tuned settle can't silently strand a prompt. Slash prompts verify
+    unconditionally: even after the settle, Claude's popup can consume the Enter
+    selecting the highlighted completion, leaving the command (e.g. "/clear") in
+    the composer unsubmitted — the resent Enter then submits it for real.
     """
     literal = _run("send-keys", "-t", pane, "-l", "--", text)
     if not literal["ok"]:
         return {"ok": False, "error": literal["error"]}
+    is_slash = text.lstrip().startswith("/")
     delay = settle_before_enter
-    if text.lstrip().startswith("/"):
+    if is_slash:
         delay = max(delay, _SLASH_SETTLE)
     if delay > 0:
         time.sleep(delay)
     enter = _run("send-keys", "-t", pane, "Enter")
     if not enter["ok"]:
         return {"ok": False, "error": enter["error"]}
-    if verify_submit:
+    if verify_submit or is_slash:
         for _ in range(_SUBMIT_VERIFY_RETRIES):
             time.sleep(_SUBMIT_VERIFY_WAIT)
             if not _composer_has_tail(pane, text):
