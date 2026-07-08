@@ -1,6 +1,13 @@
 """Narrow platform adapters used by core modules."""
 from __future__ import annotations
 
-from .process import open_files
+from .process import list_processes, open_files, process_cwd, process_start_ms
+from .types import ProcessInfo
 
-__all__ = ["open_files"]
+__all__ = [
+    "ProcessInfo",
+    "list_processes",
+    "open_files",
+    "process_cwd",
+    "process_start_ms",
+]

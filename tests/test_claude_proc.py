@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 from core import sessions
+from core.platform import ProcessInfo
 
 
 class ParseClaudeProcTests(unittest.TestCase):
@@ -36,7 +37,6 @@ class ParseClaudeProcTests(unittest.TestCase):
         self.assertIsNone(sessions._parse_claude_proc("python claude_helper.py"))
 
 
-@unittest.skipUnless(os.path.isdir("/proc"), "process-first detection is Linux-only")
 class ListClaudeProcWindowsTests(unittest.TestCase):
     PS = (
         "212704 pts/3 claude --resume f0eb279f-96d2\n"
@@ -47,13 +47,19 @@ class ListClaudeProcWindowsTests(unittest.TestCase):
     )
 
     def _run(self, known_pids=frozenset(), known_ttys=frozenset()):
-        # Relies on a real /proc (Linux); the transcript path resolves against
-        # the real PROJECTS_DIR and simply won't exist, which is what we want.
-        with mock.patch("core.sessions.subprocess.check_output",
-                        return_value=self.PS.encode()), \
+        processes = {}
+        for line in self.PS.splitlines():
+            pid_s, tty, args = line.split(None, 2)
+            pid = int(pid_s)
+            processes[pid] = ProcessInfo(pid=pid, ppid=0, tty=tty, comm=args.split()[0], args=args)
+        # The transcript path resolves against the real PROJECTS_DIR and simply
+        # won't exist, which is what this process-first test wants.
+        with mock.patch("core.sessions.platform_process.list_processes", return_value=processes), \
+             mock.patch("core.sessions.platform_process.process_cwd", return_value="/work/qwen3-Omni"), \
+             mock.patch("core.sessions.platform_process.process_start_ms", return_value=1000), \
              mock.patch("core.sessions._pid_alive", return_value=True), \
              mock.patch("core.sessions._cwd_visible", return_value=True), \
-             mock.patch("core.sessions.os.readlink", return_value="/work/qwen3-Omni"):
+             mock.patch("core.sessions.time.time", return_value=2):
             return sessions.list_claude_proc_windows(set(known_pids), set(known_ttys))
 
     def test_only_interactive_unknown_claude_is_carded(self):
@@ -155,7 +161,6 @@ class DiscoverProcTranscriptTests(unittest.TestCase):
         self.assertIsNone(path)
 
 
-@unittest.skipUnless(os.path.isdir("/proc"), "process-first detection is Linux-only")
 class ResumeForkTests(unittest.TestCase):
     """`--resume <oldid>` forks a new id in recent Claude; the card must follow
     the forked (live) transcript, not the frozen resume-arg file."""
@@ -181,10 +186,18 @@ class ResumeForkTests(unittest.TestCase):
         os.utime(f, (mtime, mtime))
 
     def _run(self, ps):
-        with mock.patch("core.sessions.subprocess.check_output", return_value=ps.encode()), \
+        processes = {}
+        for line in ps.splitlines():
+            pid_s, tty, args = line.split(None, 2)
+            pid = int(pid_s)
+            processes[pid] = ProcessInfo(pid=pid, ppid=0, tty=tty, comm=args.split()[0], args=args)
+        with mock.patch("core.sessions.platform_process.list_processes", return_value=processes), \
+             mock.patch("core.sessions.platform_process.process_cwd", return_value=self.cwd), \
+             mock.patch("core.sessions.platform_process.process_start_ms",
+                        return_value=int((self.now - 10) * 1000)), \
              mock.patch("core.sessions._pid_alive", return_value=True), \
              mock.patch("core.sessions._cwd_visible", return_value=True), \
-             mock.patch("core.sessions.os.readlink", return_value=self.cwd):
+             mock.patch("core.sessions.time.time", return_value=self.now):
             return sessions.list_claude_proc_windows(set(), set())
 
     def test_adopts_forked_transcript_over_frozen_resume_arg(self):

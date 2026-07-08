@@ -9,6 +9,9 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 
+from . import platform as platform_process
+
+
 def _home_base() -> Path:
     """Base dir the dashboard reads from. Override with CLAUDE_FLEET_HOME to
     point at a fixture/demo tree (used for screenshots, demos, and tests)."""
@@ -114,13 +117,10 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _proc_start_ms(pid: int) -> int:
-    """Immutable process start time (ms) from the /proc/<pid> dir mtime; 0 if the
+    """Immutable process start time (ms), or 0 if the
     process is gone. Constant for the life of the pid, so it makes a stable card-
     ordering anchor — see the started_at note in list_windows."""
-    try:
-        return int(os.stat(f"/proc/{pid}").st_mtime * 1000)
-    except Exception:
-        return 0
+    return platform_process.process_start_ms(pid)
 
 
 def _pid_tty(pid: int) -> Optional[str]:
@@ -403,16 +403,11 @@ def list_claude_proc_windows(
     of which register no session file until the session actually starts. Without
     this they'd be invisible on the dashboard. Keyed by the live pid; dedup'd
     against the file-based windows by pid and tty so a session that has written
-    its file is never double-carded. Linux-only (reads /proc); [] elsewhere.
+    its file is never double-carded. Returns [] when platform process discovery
+    is unavailable.
     """
-    if not Path("/proc").is_dir():
-        return []
-    try:
-        out = subprocess.check_output(
-            ["ps", "-eo", "pid=,tty=,args="],
-            stderr=subprocess.DEVNULL, timeout=5,
-        ).decode("utf-8", "replace")
-    except Exception:
+    processes = platform_process.list_processes()
+    if not processes:
         return []
 
     windows: list[Window] = []
@@ -425,21 +420,12 @@ def list_claude_proc_windows(
     # so absent from known_sids), and the ps scan order is arbitrary — without
     # this a fresh spawn processed first would adopt a resumed session's
     # transcript (its file's mtime is refreshed by the resume itself).
-    for _line in out.splitlines():
-        _parts = _line.split(None, 2)
-        if len(_parts) >= 3:
-            _p = _parse_claude_proc(_parts[2])
-            if _p and _p.get("session_id"):
-                claimed_sids.add(_p["session_id"])
-    for line in out.splitlines():
-        parts = line.split(None, 2)
-        if len(parts) < 3:
-            continue
-        try:
-            pid = int(parts[0])
-        except ValueError:
-            continue
-        tty_raw, args = parts[1], parts[2]
+    for info in processes.values():
+        _p = _parse_claude_proc(info.args)
+        if _p and _p.get("session_id"):
+            claimed_sids.add(_p["session_id"])
+    for pid, info in processes.items():
+        tty_raw, args = info.tty, info.args
         if tty_raw in ("?", "??") or not tty_raw:
             continue  # no controlling terminal → background/daemon, not a window
         if pid in known_pids:
@@ -453,10 +439,7 @@ def list_claude_proc_windows(
         if not _pid_alive(pid):
             continue
 
-        try:
-            cwd = os.readlink(f"/proc/{pid}/cwd")
-        except Exception:
-            cwd = ""
+        cwd = platform_process.process_cwd(pid) or ""
         if not _cwd_visible(cwd):
             continue
         seen_ttys.add(tty)

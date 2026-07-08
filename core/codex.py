@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import time
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
@@ -473,25 +472,16 @@ def _classify_codex(status: str, idle_seconds: int, current_task: str) -> dict:
 
 
 def _proc_table() -> dict[int, dict]:
-    """{pid: {ppid, tty, args}} for every process, via one `ps` call."""
-    try:
-        out = subprocess.check_output(
-            ["ps", "-eo", "pid=,ppid=,tty=,args="],
-            stderr=subprocess.DEVNULL, timeout=5,
-        ).decode("utf-8", "replace")
-    except Exception:
-        return {}
-    table: dict[int, dict] = {}
-    for line in out.splitlines():
-        parts = line.split(None, 3)
-        if len(parts) < 4:
-            continue
-        try:
-            pid, ppid = int(parts[0]), int(parts[1])
-        except ValueError:
-            continue
-        table[pid] = {"ppid": ppid, "tty": parts[2], "args": parts[3]}
-    return table
+    """{pid: {ppid, tty, args, comm}} for every visible process."""
+    return {
+        pid: {
+            "ppid": info.ppid,
+            "tty": info.tty,
+            "args": info.args,
+            "comm": info.comm,
+        }
+        for pid, info in platform_process.list_processes().items()
+    }
 
 
 def _newest_rollout_from_paths(paths, sessions_marker: str) -> Optional[str]:
@@ -601,11 +591,8 @@ def _is_interactive_codex(args: str) -> bool:
 
 
 def _proc_start_ms(pid: int) -> int:
-    """Approximate process start time (ms) from the /proc/<pid> dir mtime."""
-    try:
-        return int(os.stat(f"/proc/{pid}").st_mtime * 1000)
-    except Exception:
-        return 0
+    """Approximate process start time (ms), or 0 when unavailable."""
+    return platform_process.process_start_ms(pid)
 
 
 def list_codex_windows() -> list[Window]:
@@ -616,10 +603,8 @@ def list_codex_windows() -> list[Window]:
     until the first turn, so a card must appear from the live process alone and
     get its session_id/transcript filled in once the rollout exists.
 
-    Linux-only (reads /proc); returns [] on any platform without it.
+    Returns [] when the platform process snapshot is unavailable.
     """
-    if not Path("/proc").is_dir():
-        return []
     table = _proc_table()
     if not table:
         return []
@@ -654,11 +639,9 @@ def list_codex_windows() -> list[Window]:
 
         cwd = ""
         for pid in (anchor, card_pid, *pids):
-            try:
-                cwd = os.readlink(f"/proc/{pid}/cwd")
+            cwd = platform_process.process_cwd(pid) or ""
+            if cwd:
                 break
-            except Exception:
-                continue
 
         # Anchor the card's ordering to the immutable process start time, NOT the
         # rollout meta timestamp. The two clocks disagree (e.g. `codex resume`

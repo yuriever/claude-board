@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from core import codex
+from core.platform import ProcessInfo
 from core.platform import macos
 
 
@@ -246,7 +247,7 @@ class TestMacOSOpenFiles(unittest.TestCase):
             "p123",
             "fcwd",
             "tDIR",
-            "n/Users/example-user/.codex/sessions/rollout-a.jsonl",
+            "n/tmp/codex-home/.codex/sessions/rollout-a.jsonl",
             "nlocalhost:1234",
             "n",
             "",
@@ -255,7 +256,7 @@ class TestMacOSOpenFiles(unittest.TestCase):
             " n/private/tmp/malformed.txt",
         ])
         self.assertEqual(macos._parse_lsof_open_files(output), [
-            "/Users/example-user/.codex/sessions/rollout-a.jsonl",
+            "/tmp/codex-home/.codex/sessions/rollout-a.jsonl",
             "/private/tmp/plain.txt",
         ])
 
@@ -273,6 +274,33 @@ class TestMacOSOpenFiles(unittest.TestCase):
         proc = subprocess.CompletedProcess(["lsof"], 0, stdout="", stderr="")
         with mock.patch("core.platform.macos.subprocess.run", return_value=proc):
             self.assertEqual(macos.open_files(123), [])
+
+
+class TestCodexProcessDiscovery(unittest.TestCase):
+    def test_just_launched_codex_becomes_card_from_platform_snapshot(self):
+        proc = ProcessInfo(
+            pid=4242,
+            ppid=1,
+            tty="ttys001",
+            comm="codex",
+            args="codex --yolo",
+        )
+        with mock.patch.object(codex.platform_process, "list_processes", return_value={4242: proc}), \
+             mock.patch.object(codex.platform_process, "open_files", return_value=[]), \
+             mock.patch.object(codex.platform_process, "process_cwd", return_value="/work/project"), \
+             mock.patch.object(codex.platform_process, "process_start_ms", return_value=123456), \
+             mock.patch("core.codex._pid_alive", return_value=True), \
+             mock.patch("core.codex.get_tty", return_value="/dev/ttys001"):
+            wins = codex.list_codex_windows()
+
+        self.assertEqual(len(wins), 1)
+        w = wins[0]
+        self.assertEqual(w.pid, 4242)
+        self.assertEqual(w.session_id, "codex-4242")
+        self.assertEqual(w.cwd, "/work/project")
+        self.assertEqual(w.started_at, 123456)
+        self.assertIsNone(w.transcript_path)
+        self.assertEqual(w.platform, "codex")
 
 
 if __name__ == "__main__":
