@@ -15,7 +15,6 @@ fixtures/demo-home/
 .humanize/
 .env.local
 
-# fork-local content
+# fork-local untracked content
 uv.lock
 AGENTS.md
-fork-docs/
