@@ -1,108 +1,56 @@
 # Current Fork Delta
 
-This audit describes the intentional fork delta after the macOS platform adapter work.
+This audit summarizes the intentional delta carried by `master` relative to the clean upstream mirror branch `original`.
 
-## Reference Branches
-
-Clean upstream mirror branch in the fork:
+## Reference
 
 ```text
 original = bfc2de8 Detect the borderless /btw overlay on the send path too
 ```
 
-Fork integration branch:
+`master` carries the fork changes below.
 
-```text
-master carries the fork commits listed below, plus this documentation commit.
-```
-
-## Intentional Changes On `master`
+## Delta
 
 ### Launcher Portability
-
-Commit:
 
 ```text
 50d055b Improve launcher portability
 ```
 
-Purpose:
+`run.sh` now prefers `uv run`, falls back to `.venv`, requires Python 3.10 or newer, parses `.env.local` without executing it, validates the HTTP port, and keeps detached startup logs local.
 
-* Prefer `uv run` for startup.
-* Fall back to a local `.venv` when `uv` is unavailable.
-* Require Python 3.10 or newer.
-* Parse `.env.local` as a restricted key-value file instead of executing it.
-* Validate the HTTP port.
-* Support detached startup through `setsid` or `nohup`.
-* Keep `uvicorn.log` local and private.
-
-Conflict risk:
-
-* Medium to high. `run.sh` is an upstream-owned launcher file and the fork currently rewrites a large part of it.
+Conflict risk: medium to high. `run.sh` is upstream-owned and remains the largest merge-conflict surface.
 
 ### Platform Adapter Phase 1
-
-Commit:
 
 ```text
 4eaea95 Add platform open-files adapter
 ```
 
-Purpose:
+Codex rollout open-file discovery now goes through `core.platform.open_files(pid)`. Linux keeps `/proc/<pid>/fd`; macOS uses `lsof`. Rollout selection remains in `core/codex.py`.
 
-* Add `core/platform/`.
-* Move Codex open-file discovery behind `platform.open_files(pid)`.
-* Keep Linux behavior based on `/proc/<pid>/fd`.
-* Add macOS behavior based on `lsof`.
-* Keep rollout selection rules in `core/codex.py`.
-
-Conflict risk:
-
-* Low to medium. Most code is in new files. The existing `core/codex.py` changes are narrow call-site changes.
+Conflict risk: low to medium. Most code is new under `core/platform/`; the `core/codex.py` change is a narrow call-site change.
 
 ### Platform Adapter Phase 2
-
-Commit:
 
 ```text
 4993b8e Add platform process primitives
 ```
 
-Purpose:
+Live Codex and fresh Claude process discovery now use platform primitives for process snapshots, cwd, and start time. Linux keeps `/proc` behavior; macOS uses `ps` and `lsof` with argv-list subprocess calls, timeouts, integer pid conversion, and fail-closed parsing.
 
-* Add `ProcessInfo`.
-* Add platform process snapshot, cwd, and start-time primitives.
-* Route Codex live discovery through the platform layer.
-* Route Claude fresh-process discovery through the platform layer.
-* Remove live-discovery dependence on `Path("/proc").is_dir()`.
-* Add mocked tests for Linux and macOS process behavior.
-
-Security decisions:
-
-* macOS helper commands use `/bin/ps` and `/usr/sbin/lsof`.
-* PIDs are converted through `int(pid)` before subprocess use.
-* Subprocess calls use argv lists, timeouts, and no shell strings.
-* `lsof` and `ps` failures fail closed instead of guessing process facts.
-* Test fixtures use synthetic paths such as `/tmp/codex-home` and `/tmp/example-project`, not local usernames or machine-specific home paths.
-
-Conflict risk:
-
-* Low to medium. Platform code is mostly new. Existing `core/codex.py` and `core/sessions.py` changes are limited to OS primitive call sites.
+Conflict risk: low to medium. Existing `core/codex.py` and `core/sessions.py` changes stay near OS primitive call sites.
 
 ### Fork Documentation
 
-Purpose:
+`fork-docs/` records fork policy, current delta, remaining follow-up work, and historical implementation plans.
 
-* Track fork-only planning, sync policy, and maintenance audits.
-* Keep local fork knowledge available to future Codex threads and human review.
+Conflict risk: low. This directory is fork-owned.
 
-Conflict risk:
+## Verification
 
-* Low. Documentation lives under `fork-docs/`, which upstream should not touch.
-
-## Verification Already Performed
-
-After Phase 2 was merged into `master`:
+Latest full verification after the platform adapter work:
 
 ```sh
 uv run python -m py_compile app.py core/*.py core/platform/*.py
@@ -117,6 +65,4 @@ Results:
 
 Normal Codex Review and security-focused review were clean for Phase 2.
 
-## Remaining Maintenance Risk
-
-`run.sh` is the main remaining conflict surface. If upstream changes startup behavior often, consider moving fork-specific launch behavior into a separate fork-local script and reducing `run.sh` to a smaller wrapper or near-upstream file.
+Open follow-up work is tracked in `fork-docs/backlog.md`.

@@ -1,50 +1,20 @@
 # Fork Documentation
 
-This directory contains documentation for the `yuriever/claude-board` fork. It is intentionally tracked in Git because it explains local fork decisions, branching policy, and maintenance steps that future work should preserve.
+This directory tracks maintenance knowledge for the `yuriever/claude-board` fork. It is not upstream product documentation.
 
-These files are not upstream product documentation. Keep upstream-facing documentation under the upstream project's normal documentation directories.
+## Files
 
-## Layout
+* `decisions/fork-sync-policy.md`: branch and remote policy for keeping the fork close to upstream without adding a persistent upstream remote.
+* `decisions/platform-adapter-boundaries.md`: current rules for what belongs in `core/platform/` and what stays in product modules.
+* `audits/current-fork-delta.md`: the current intentional delta carried by `master` relative to `original`.
+* `backlog.md`: open follow-up work that is not part of the completed platform-adapter phases.
+* `plans/original/`: archived original long-form implementation plans.
+* `plans/completed/`: short completion summaries for finished implementation phases.
 
-```text
-fork-docs/
-  README.md
-  plans/
-    platform-adapter-overview-and-phase-1.md
-    platform-adapter-phase-2.md
-  decisions/
-    fork-sync-policy.md
-  audits/
-    current-fork-delta.md
-```
+## Rules
 
-## Branch Model
-
-`master` is the fork integration branch. It carries local implementation work, including macOS support and fork documentation.
-
-`original` is a clean mirror branch for the upstream repository. It should be updated only through GitHub's Sync fork UI, not by local commits.
-
-The local checkout intentionally keeps only the fork remote:
-
-```text
-origin = https://github.com/yuriever/claude-board.git
-```
-
-Do not add a persistent local remote for `LukeLIN-web/claude-board`.
-
-## Tracked And Ignored Fork Content
-
-Tracked:
-
-* `fork-docs/`
-
-Ignored:
-
-* `AGENTS.md`
-* `uv.lock`
-* `.env.local`
-* local virtual environments, caches, logs, and generated files
-
-## Maintenance Rule
-
-When changing fork policy, macOS adaptation strategy, or the expected upstream sync workflow, update this directory in the same commit or in a nearby documentation commit.
+* Put durable fork decisions under `decisions/`.
+* Put current branch delta and verification state under `audits/`.
+* Put unfinished follow-up work in `backlog.md`.
+* Keep original implementation plans under `plans/original/` as historical archives.
+* Keep short completion records under `plans/completed/`.
