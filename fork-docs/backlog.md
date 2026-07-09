@@ -4,13 +4,17 @@ This file tracks unfinished fork follow-up work. Original implementation plans b
 
 ## Active
 
+### Codex Desktop Monitor
+
+Add Codex Desktop as a separate dashboard source from Codex CLI/TUI. The next implementation should use the Desktop IPC router to create read-only live-thread cards from sanitized `thread-stream-state-changed` snapshots and patches. Plan: `plans/original/codex-desktop-monitor-phase-3.md`.
+
 ### Run Launcher Conflict Surface
 
 `run.sh` carries useful fork behavior but is likely to conflict when upstream changes startup logic. If this becomes noisy during upstream sync, move fork-specific startup behavior into a separate script and reduce `run.sh` to a smaller wrapper.
 
 ### macOS Smoke Test
 
-Run a real macOS smoke test with live Claude and Codex sessions. Confirm that `ps` and `lsof` permissions are sufficient, live cards appear, rollout attachment works, and missing permissions fail closed without misleading cards.
+Codex CLI/TUI live-card discovery has been manually confirmed on macOS. Remaining smoke coverage should check Claude fresh-process cards, missing-permission degradation, and regressions after Phase 3.
 
 ### macOS Polling Cost
 
@@ -20,4 +24,5 @@ Measure the actual cost of the current `ps` and `lsof` calls only after the smok
 
 * Adding a persistent local remote for the original repository.
 * Moving Claude/Codex product classifiers into `core/platform/`.
+* Folding Codex Desktop discovery into Codex CLI/TUI tty discovery.
 * Reworking tmux, focus, terminal spawn, search, or history parsing without a concrete OS primitive requirement.
